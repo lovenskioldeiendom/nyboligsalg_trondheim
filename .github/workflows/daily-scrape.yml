@@ -1,0 +1,79 @@
+name: Daglig nyboligscraping
+
+on:
+  schedule:
+    # Odde minutter er mer reliable enn :00 — GitHub har mindre kø der.
+    # 05:17 UTC = 06:17 norsk vintertid / 07:17 sommertid.
+    - cron: '31 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: python -m playwright install chromium --with-deps
+
+      - name: Run scraper
+        run: python -m scraper.run
+
+      - name: Geocode new addresses
+        run: python -m scraper.geocode
+
+      - name: Build dashboard
+        run: python build_dashboard.py
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add nybolig.db dashboard/index.html
+          git diff --staged --quiet && exit 0  # Ingen endringer = ferdig
+
+          git commit -m "Daglig oppdatering $(date -u +%Y-%m-%d)"
+
+          # Push med retry — hvis remote har endret seg, pull rebase og prøv igjen
+          for i in 1 2 3; do
+            if git push; then
+              exit 0
+            fi
+            echo "Push feilet, prøver pull --rebase og retry ($i/3)..."
+            git pull --rebase
+            sleep 2
+          done
+          echo "Push feilet etter 3 forsøk"
+          exit 1
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dashboard
+
+  deploy:
+    needs: scrape
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
