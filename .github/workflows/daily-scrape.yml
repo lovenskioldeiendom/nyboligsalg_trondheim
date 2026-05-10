@@ -1,10 +1,9 @@
-name: Daglig nyboligscraping
+name: Daglig nyboligscraping Trondheim
 
 on:
   schedule:
-    # Odde minutter er mer reliable enn :00 — GitHub har mindre kø der.
-    # 05:17 UTC = 06:17 norsk vintertid / 07:17 sommertid.
-    - cron: '31 5 * * *'
+    - cron: '31 5 * * *'   # 06:31 norsk vintertid / 07:31 sommertid
+    - cron: '31 8 * * *'   # 09:31 norsk vintertid / 10:31 sommertid (backup)
   workflow_dispatch:
 
 permissions:
@@ -20,48 +19,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Skip if already run today
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            TODAY=$(date -u +%Y-%m-%d)
+            LAST=$(git log -1 --pretty=%s)
+            if echo "$LAST" | grep -q "Daglig oppdatering $TODAY"; then
+              echo "Allerede kjørt i dag, hopper over"
+              echo "skip=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
       - name: Setup Python
+        if: steps.check.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
+        if: steps.check.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       - name: Install Playwright browsers
+        if: steps.check.outputs.skip != 'true'
         run: python -m playwright install chromium --with-deps
 
       - name: Run scraper
+        if: steps.check.outputs.skip != 'true'
         run: python -m scraper.run
 
       - name: Geocode new addresses
+        if: steps.check.outputs.skip != 'true'
         run: python -m scraper.geocode
 
       - name: Build dashboard
+        if: steps.check.outputs.skip != 'true'
         run: python build_dashboard.py
 
       - name: Commit results
+        if: steps.check.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add nybolig.db dashboard/index.html
-          git diff --staged --quiet && exit 0  # Ingen endringer = ferdig
+          git diff --staged --quiet && exit 0
 
           git commit -m "Daglig oppdatering $(date -u +%Y-%m-%d)"
 
-          # Push med retry — hvis remote har endret seg, pull rebase og prøv igjen
           for i in 1 2 3; do
-            if git push; then
-              exit 0
-            fi
+            if git push; then exit 0; fi
             echo "Push feilet, prøver pull --rebase og retry ($i/3)..."
             git pull --rebase
             sleep 2
           done
-          echo "Push feilet etter 3 forsøk"
           exit 1
 
       - name: Upload Pages artifact
+        if: steps.check.outputs.skip != 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dashboard
@@ -72,7 +87,6 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
